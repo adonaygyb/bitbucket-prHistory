@@ -1,2 +1,4 @@
-json_historical_data.json
-PrHistoryPlot.html
+pr_data.json
+final_plot.html
+
+.idea/
