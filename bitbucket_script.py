@@ -211,7 +211,10 @@ class BitbucketPrPlotter(object):
             self._password = password
         else:
             self._password = input("Enter password: ")
-        self._url = url
+        if url:
+            self._url = url
+        else:
+            self._url = input("Enter the Bitbucket server URL: ")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Code Review Data Analytics Tool.')
