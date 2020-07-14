@@ -3,6 +3,7 @@ from datetime import date, datetime
 from string import Template
 import argparse
 import json
+import os
 
 PR_DASHBOARD_PATH = '/rest/api/1.0/dashboard/pull-requests'
 JSON_FILE = 'pr_data.json'
@@ -17,16 +18,64 @@ class BitbucketPrPlotter(object):
     def __init__(self):
         """
         :brief Initializer method for BitbucketPrPlotter class.
-        :param:
         :return:
         """
         self._user = None
         self._password = None
         self._curr_month = date.today().month
         self._url = None
-        self._last_recorded_month = None
-        self._pr_raw_data_dict = {}
+        self._last_recorded_year = 0
+        self._last_recorded_month = 0
         self._pr_parsed_data_dict = {}
+        if os.path.isfile(JSON_FILE):
+            self._read_from_json()
+
+    def _get_month_name_or_number(self, month):
+        MONTH_NUMBERS = {'January'  : 1,
+                         'February' : 2,
+                         'March'    : 3,
+                         'April'    :4,
+                         'May'      :5,
+                         'June'     :6,
+                         'July'     :7,
+                         'August'   :8,
+                         'September':9,
+                         'October'  :10,
+                         'November' :11,
+                         'December' :12}
+        MONTH_NAMES = {1: 'January',
+                       2: 'February',
+                       3: 'March',
+                       4: 'April',
+                       5: 'May',
+                       6: 'June',
+                       7: 'July',
+                       8: 'August',
+                       9: 'September',
+                       10: 'October',
+                       11: 'November',
+                       12: 'December'}
+
+        if isinstance(month, str):
+            return MONTH_NUMBERS[month]
+        elif isinstance(month, int):
+            return MONTH_NAMES[month]
+        else:
+            raise ValueError(f"{month} is of undefined type: {type(month)}")
+
+    def _read_from_json(self):
+        """
+        :brief _read_from_json: Private function to read a json file and grab the last recorded month/year
+        :return:
+        """
+        month_num_to_name = {}
+        with open(JSON_FILE) as cache_data:
+            self._pr_parsed_data_dict = json.load(cache_data)
+        self._last_recorded_year = max(map(lambda x: int(x), self._pr_parsed_data_dict.keys()))
+        for month_name in self._pr_parsed_data_dict[str(self._last_recorded_year)].keys():
+            month_num_to_name[self._get_month_name_or_number(month_name)] = month_name
+        last_month_num = max(month_num_to_name.keys())
+        self._last_recorded_month = last_month_num
 
     def _write_to_json(self, json_data):
         """
@@ -40,22 +89,21 @@ class BitbucketPrPlotter(object):
     def _get_pr_per_month_data_list(self):
         """
         :brief _get_pr_per_month_data_list: Private function steps through a dictionary to count number of PRs/month.
-        :param:
         :return: pr_month_chartData
         """
         pr_month_chartData = [["Month", "Number of Code Reviews"]]
         for year in self._pr_parsed_data_dict.keys():
-            for month in self._pr_parsed_data_dict[year]:
+            for month in sorted(self._pr_parsed_data_dict[year].keys(), key=self._get_month_name_or_number):
                 pr_count = 0
                 for repo in self._pr_parsed_data_dict[year][month]:
                     pr_count += len(self._pr_parsed_data_dict[year][month][repo].values())
                 pr_month_chartData.append([f"{month}/{year}", pr_count])    # if python<3.6 => "{}/{}".format(month,year)
+
         return pr_month_chartData
 
     def _get_pr_per_repo_data_list(self):
         """
         :brief _get_pr_per_repo_data_list: Private function steps through a dictionary to count number of PRs/repo.
-        :param:
         :return: pr_repo_chartData
         """
         repo_pr_counter = {}
@@ -120,6 +168,26 @@ class BitbucketPrPlotter(object):
         return htmlString.substitute(labels=pr_month_chartData[0], data=pr_month_chart_data_str,
                                      labels2=pr_repo_chartData[0], data2=pr_repo_chart_data_str)
 
+    def _is_pr_cached(self, pr):
+        """
+        :brief _is_pr_cached: A flag for checking if current PR information is already cached.
+        :param pr: data of a single pull request entry the user is reviewing.
+        :return: boolean
+        """
+        returnVal = False
+        if self._last_recorded_year and self._last_recorded_month:
+            pr_time_stamp = datetime.fromtimestamp(pr['createdDate'] / 1000)
+            pr_month = int(pr_time_stamp.strftime("%m"))
+            pr_year = int(pr_time_stamp.year)
+
+            # 2019 < 2020 (True); 06-2020 <= 08-2020 (True); 06-2020 > 80-2019 (False)
+            if (pr_year < self._last_recorded_year):
+                returnVal = True
+            elif pr_month < self._last_recorded_month:
+                if (pr_year <= self._last_recorded_year):
+                    returnVal = True
+        return returnVal
+
     def _write_to_html(self, outFileTxt):
         """
         :brief _write_to_html: Private function for writing a string to an html file.
@@ -129,11 +197,10 @@ class BitbucketPrPlotter(object):
         with open(FINAL_HTML_FILE, 'w') as f:
             f.write(outFileTxt)
 
-    def getAllPullRequests(self):
+    def get_raw_pull_request_data(self):
         """
-        :brief getAllPullRequests: A function to return all pull requests user has reviewed
-        :param:
-        :return:
+        :brief get_raw_pull_request_data: A function to return all pull requests user has reviewed from server
+        :return: A list of raw pull-request data values.
         """
         bitbucket = Bitbucket(url=self._url, username=self._user, password=self._password, verify_ssl=False)
         params = {
@@ -142,28 +209,31 @@ class BitbucketPrPlotter(object):
         }
         print("****************************** Beginning to Read Pull Request Data ******************************")
         data = bitbucket.get(PR_DASHBOARD_PATH, params=params)
+        pr_data_list = []
         if 'values' in data:
-            self._pr_raw_data_dict = (data or {}).get('values')
-            while not data.get('isLastPage'):
+            pr_data_list = (data or {}).get('values')
+
+            # Check if last page or the oldest pr entry is saved somewhere before reading another page
+            while not data.get('isLastPage') and not self._is_pr_cached(pr_data_list[-1]):
                 start = data.get('nextPageStart')
                 params['start'] = start
                 data = bitbucket.get(PR_DASHBOARD_PATH, params=params)
-                self._pr_raw_data_dict += (data or {}).get('values')
+                pr_data_list += (data or {}).get('values')
         print("******************************* Ending to Read Pull Request Data *********************************")
+        return pr_data_list
 
-    def buildJsonFile(self):
+    def parse_and_cache_pr_data(self, pull_requests):
         """
-        :brief buildJsonFile: - A function to parse raw pull request data received from REST calls and write parsed
-            dictionary data to a JSON file.
-        :param:
+        :brief parse_and_cache_pr_data: - A function to parse raw pull request data and cache values in JSON file.
         :return:
         """
-        for pr in self._pr_raw_data_dict:
+        for pr in pull_requests:
             pr_time_stamp = datetime.fromtimestamp(pr['createdDate']/1000)
-            pr_month = pr_time_stamp.strftime("%B")
+            pr_month_name = pr_time_stamp.strftime("%B")
             pr_year = pr_time_stamp.year
-            #if pr_month != curr_month:
-            #    break
+            # skip parsing if there is cached data for this pr already.
+            if self._is_pr_cached(pr):
+                continue
             pr_repo = pr['toRef']['repository']['name']
             pr_link = pr['links']['self'][0]['href']
             for reviewer in pr['reviewers']:
@@ -173,21 +243,20 @@ class BitbucketPrPlotter(object):
                     else:
                         pr_status = reviewer['status']
                         if pr_year in self._pr_parsed_data_dict.keys():
-                            if pr_month in self._pr_parsed_data_dict[pr_year].keys():
-                                if pr_repo in self._pr_parsed_data_dict[pr_year][pr_month].keys():
-                                    self._pr_parsed_data_dict[pr_year][pr_month][pr_repo][pr_link] = pr_status
+                            if pr_month_name in self._pr_parsed_data_dict[pr_year].keys():
+                                if pr_repo in self._pr_parsed_data_dict[pr_year][pr_month_name].keys():
+                                    self._pr_parsed_data_dict[pr_year][pr_month_name][pr_repo][pr_link] = pr_status
                                 else:
-                                    self._pr_parsed_data_dict[pr_year][pr_month][pr_repo] = {pr_link : pr_status}
+                                    self._pr_parsed_data_dict[pr_year][pr_month_name][pr_repo] = {pr_link : pr_status}
                             else:
-                                self._pr_parsed_data_dict[pr_year][pr_month] = {pr_repo : {pr_link : pr_status}}
+                                self._pr_parsed_data_dict[pr_year][pr_month_name] = {pr_repo : {pr_link : pr_status}}
                         else:
-                            self._pr_parsed_data_dict[pr_year] = {pr_month : {pr_repo : {pr_link : pr_status}}}
+                            self._pr_parsed_data_dict[pr_year] = {pr_month_name : {pr_repo : {pr_link : pr_status}}}
         self._write_to_json(self._pr_parsed_data_dict)
 
     def plot_data(self):
         """
         :brief plot_data: A function to write the parsed pr data into an html file to be plotted.
-        :param:
         :return:
         """
         pr_month_chartData = self._get_pr_per_month_data_list()
@@ -226,8 +295,8 @@ if __name__ == '__main__':
 
     plotter = BitbucketPrPlotter()
     plotter.prompt_user(cmdArgs.username, cmdArgs.password, cmdArgs.url)
-    plotter.getAllPullRequests()
-    plotter.buildJsonFile()
+    pr_list = plotter.get_raw_pull_request_data()
+    plotter.parse_and_cache_pr_data(pr_list)
     plotter.plot_data()
 
     #bitbucket = Bitbucket(url='https://nsg-bit.intel.com:443', username=usr_idsid, password=usr_passwrd, verify_ssl=False)
