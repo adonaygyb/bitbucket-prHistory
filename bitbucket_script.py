@@ -92,12 +92,12 @@ class BitbucketPrPlotter(object):
         :return: pr_month_chartData
         """
         pr_month_chartData = [["Month", "Number of Code Reviews"]]
-        for year in self._pr_parsed_data_dict.keys():
+        for year in sorted(self._pr_parsed_data_dict.keys()):
             for month in sorted(self._pr_parsed_data_dict[year].keys(), key=self._get_month_name_or_number):
                 pr_count = 0
                 for repo in self._pr_parsed_data_dict[year][month]:
                     pr_count += len(self._pr_parsed_data_dict[year][month][repo].values())
-                pr_month_chartData.append([f"{month}/{year}", pr_count])    # if python<3.6 => "{}/{}".format(month,year)
+                pr_month_chartData.insert(1, [f"{month}/{year}", pr_count])    # if python<3.6 => "{}/{}".format(month,year)
 
         return pr_month_chartData
 
@@ -230,7 +230,7 @@ class BitbucketPrPlotter(object):
         for pr in pull_requests:
             pr_time_stamp = datetime.fromtimestamp(pr['createdDate']/1000)
             pr_month_name = pr_time_stamp.strftime("%B")
-            pr_year = pr_time_stamp.year
+            pr_year = str(pr_time_stamp.year)
             # skip parsing if there is cached data for this pr already.
             if self._is_pr_cached(pr):
                 continue
